@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Falcon Rocket</title>
+<style>
+  :root { --bg:#05070d; --fg:#e8ecf4; --panel:rgba(20,26,40,.75); --accent:#4da3ff; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; overflow:hidden; }
+  canvas { display:block; }
+  #ui { position:fixed; left:16px; top:16px; right:16px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; pointer-events:none; }
+  #ui h1 { font-size:16px; margin:0 12px 0 0; font-weight:600; letter-spacing:.04em; }
+  button { pointer-events:auto; background:var(--panel); color:var(--fg); border:1px solid #2c3954;
+    padding:8px 14px; border-radius:8px; font-size:14px; cursor:pointer; backdrop-filter:blur(6px); }
+  button:hover { border-color:var(--accent); }
+  #hint { position:fixed; left:16px; bottom:16px; font-size:12px; opacity:.6; }
+  #stats { position:fixed; right:16px; bottom:16px; font:12px ui-monospace,monospace; opacity:.8; text-align:right; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="ui">
+  <h1>FALCON-STYLE ROCKET</h1>
+  <button id="launch">🚀 Launch</button>
+  <button id="legs">Deploy legs</button>
+  <button id="sep">Stage separation</button>
+  <button id="reset">Reset</button>
+</div>
+<div id="hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+<div id="stats"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- Scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070d);
+scene.fog = new THREE.Fog(0x05070d, 120, 400);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 2000);
+camera.position.set(55, 32, 80);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 28, 0);
+controls.enableDamping = true;
+controls.maxDistance = 250;
+
+scene.add(new THREE.HemisphereLight(0xbcd2ff, 0x202030, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(40, 80, 30);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left:-40, right:40, top:80, bottom:-10, far:200 });
+scene.add(sun);
+
+// Stars
+{
+  const g = new THREE.BufferGeometry(), n = 3000, p = new Float32Array(n*3);
+  for (let i=0;i<n;i++){ const v = new THREE.Vector3().randomDirection().multiplyScalar(600+Math.random()*300);
+    v.y = Math.abs(v.y); p.set([v.x,v.y,v.z], i*3); }
+  g.setAttribute('position', new THREE.BufferAttribute(p,3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ color:0xffffff, size:1.2, sizeAttenuation:false })));
+}
+
+// Ground + pad
+const ground = new THREE.Mesh(new THREE.CircleGeometry(300, 64), new THREE.MeshStandardMaterial({ color:0x1a1d24, roughness:1 }));
+ground.rotation.x = -Math.PI/2; ground.receiveShadow = true; scene.add(ground);
+const pad = new THREE.Mesh(new THREE.CylinderGeometry(12, 13, 1, 48), new THREE.MeshStandardMaterial({ color:0x3a3f4a, roughness:.9 }));
+pad.position.y = .5; pad.receiveShadow = true; scene.add(pad);
+// Flame trench mark
+const trench = new THREE.Mesh(new THREE.RingGeometry(2.5, 3.2, 48), new THREE.MeshBasicMaterial({ color:0xffcc33 }));
+trench.rotation.x = -Math.PI/2; trench.position.y = 1.01; scene.add(trench);
+
+// Launch tower
+const tower = new THREE.Group();
+{
+  const m = new THREE.MeshStandardMaterial({ color:0x8a8f99, metalness:.6, roughness:.5 });
+  const H = 52, w = 3;
+  for (const [x,z] of [[0,0],[w,0],[0,w],[w,w]]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(.3,H,.3), m); post.position.set(x,H/2,z); post.castShadow = true; tower.add(post);
+  }
+  for (let y=2; y<H; y+=3) {
+    for (const [a,b,rot] of [[w/2,0,0],[w/2,w,0],[0,w/2,Math.PI/2],[w,w/2,Math.PI/2]]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(w,.2,.2), m); bar.position.set(a,y,b); bar.rotation.y = rot; tower.add(bar);
+    }
+  }
+  tower.position.set(-8, 1, -1.5);
+  scene.add(tower);
+}
+
+// ---------- Rocket ----------
+const white = new THREE.MeshStandardMaterial({ color:0xf3f4f6, roughness:.35, metalness:.1 });
+const black = new THREE.MeshStandardMaterial({ color:0x15171c, roughness:.5, metalness:.3 });
+const metal = new THREE.MeshStandardMaterial({ color:0x9aa0a8, roughness:.3, metalness:.9 });
+const soot  = new THREE.MeshStandardMaterial({ color:0x2b2b2e, roughness:.9 });
+
+const R = 1.85;               // body radius
+const S1 = 34, IS = 4, S2 = 9, FAIR_CYL = 5, FAIR_NOSE = 6;
+
+const rocket = new THREE.Group();
+scene.add(rocket);
+
+// --- First stage ---
+const stage1 = new THREE.Group();
+rocket.add(stage1);
+const body1 = new THREE.Mesh(new THREE.CylinderGeometry(R,R,S1,48), white);
+body1.position.y = S1/2 + 2; body1.castShadow = true; stage1.add(body1);
+// sooty lower band + black stripe
+const band = new THREE.Mesh(new THREE.CylinderGeometry(R+.01,R+.01,4,48), soot);
+band.position.y = 4; stage1.add(band);
+// Interstage (black)
+const inter = new THREE.Mesh(new THREE.CylinderGeometry(R,R,IS,48), black);
+inter.position.y = S1 + 2 + IS/2; inter.castShadow = true; stage1.add(inter);
+// Octaweb / engine section
+const octa = new THREE.Mesh(new THREE.CylinderGeometry(R,R*.95,2,8), metal);
+octa.position.y = 1; stage1.add(octa);
+// 9 engines (8 ring + 1 center)
+const bellGeo = new THREE.CylinderGeometry(.32,.62,1.4,24,1,true);
+const bellMat = new THREE.MeshStandardMaterial({ color:0x5a4a3a, metalness:.8, roughness:.35, side:THREE.DoubleSide });
+const enginePos = [[0,0]];
+for (let i=0;i<8;i++){ const a = i/8*Math.PI*2; enginePos.push([Math.cos(a)*1.25, Math.sin(a)*1.25]); }
+for (const [x,z] of enginePos){
+  const b = new THREE.Mesh(bellGeo, bellMat); b.position.set(x,-.7,z); stage1.add(b);
+}
+// Grid fins (4) at top of stage 1
+const fins = [];
+for (let i=0;i<4;i++){
+  const a = i/4*Math.PI*2 + Math.PI/4;
+  const pivot = new THREE.Group();
+  pivot.position.set(Math.cos(a)*R, S1+1, Math.sin(a)*R);
+  pivot.rotation.y = -a;
+  const fin = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(1.4,.12,1.6), metal);
+  frame.position.x = .7; fin.add(frame);
+  for (let k=-2;k<=2;k++){
+    const r1 = new THREE.Mesh(new THREE.BoxGeometry(1.4,.25,.04), metal); r1.position.set(.7,0,k*.3); fin.add(r1);
+    const r2 = new THREE.Mesh(new THREE.BoxGeometry(.04,.25,1.6), metal); r2.position.set(.7+k*.28,0,0); fin.add(r2);
+  }
+  fin.rotation.z = Math.PI/2; // stowed (flat against body)
+  pivot.add(fin); stage1.add(pivot); fins.push(fin);
+}
+// Landing legs (4)
+const legs = [];
+for (let i=0;i<4;i++){
+  const a = i/4*Math.PI*2 + Math.PI/4;
+  const pivot = new THREE.Group();
+  pivot.position.set(Math.cos(a)*(R-.1), 2.2, Math.sin(a)*(R-.1));
+  pivot.rotation.y = -a;
+  const leg = new THREE.Group();
+  const strut = new THREE.Mesh(new THREE.BoxGeometry(.5,9,.9), black);
+  strut.position.y = 4.5; strut.castShadow = true; leg.add(strut);
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(.5,.6,.25,16), metal);
+  foot.position.y = 0; leg.add(foot);
+  leg.position.x = .3;
+  pivot.add(leg); stage1.add(pivot); legs.push(pivot);
+}
+
+// --- Second stage + fairing ---
+const stage2 = new THREE.Group();
+rocket.add(stage2);
+const base2 = S1 + 2 + IS;
+const body2 = new THREE.Mesh(new THREE.CylinderGeometry(R,R,S2,48), white);
+body2.position.y = base2 + S2/2; body2.castShadow = true; stage2.add(body2);
+const mvac = new THREE.Mesh(new THREE.CylinderGeometry(.35,1.4,3.2,32,1,true), new THREE.MeshStandardMaterial({ color:0x222225, metalness:.7, roughness:.4, side:THREE.DoubleSide }));
+mvac.position.y = base2 - 1; stage2.add(mvac);
+// Fairing: cylinder + ogive nose (lathe), slightly wider
+const FR = R * 1.4;
+const fairY = base2 + S2;
+const adapter = new THREE.Mesh(new THREE.CylinderGeometry(FR,R,1.2,48), white);
+adapter.position.y = fairY + .6; stage2.add(adapter);
+const fairCyl = new THREE.Mesh(new THREE.CylinderGeometry(FR,FR,FAIR_CYL,48), white);
+fairCyl.position.y = fairY + 1.2 + FAIR_CYL/2; fairCyl.castShadow = true; stage2.add(fairCyl);
+const pts = [];
+for (let i=0;i<=24;i++){ const t = i/24; pts.push(new THREE.Vector2(FR*Math.sqrt(1 - t*t) + .001, t*FAIR_NOSE)); }
+const nose = new THREE.Mesh(new THREE.LatheGeometry(pts, 48), white);
+nose.position.y = fairY + 1.2 + FAIR_CYL; nose.castShadow = true; stage2.add(nose);
+// Fairing seam line
+const seam = new THREE.Mesh(new THREE.BoxGeometry(.04, FAIR_CYL+FAIR_NOSE*.9, FR*2+.02), black);
+seam.position.y = fairY + 1.2 + (FAIR_CYL+FAIR_NOSE*.9)/2 - .3; seam.scale.z = .999; stage2.add(seam);
+seam.visible = false;
+
+// ---------- Exhaust particles ----------
+const MAXP = 1500;
+const pGeo = new THREE.BufferGeometry();
+const pPos = new Float32Array(MAXP*3), pCol = new Float32Array(MAXP*3);
+pGeo.setAttribute('position', new THREE.BufferAttribute(pPos,3));
+pGeo.setAttribute('color', new THREE.BufferAttribute(pCol,3));
+const pMat = new THREE.PointsMaterial({ size:1.1, vertexColors:true, transparent:true, opacity:.9, blending:THREE.AdditiveBlending, depthWrite:false });
+const exhaust = new THREE.Points(pGeo, pMat); exhaust.frustumCulled = false; scene.add(exhaust);
+const parts = Array.from({length:MAXP}, () => ({ life:0, v:new THREE.Vector3(), p:new THREE.Vector3() }));
+let pIdx = 0;
+const flameLight = new THREE.PointLight(0xff8833, 0, 60, 1.5); scene.add(flameLight);
+
+function emit(origin, count, spread){
+  for (let i=0;i<count;i++){
+    const q = parts[pIdx]; pIdx = (pIdx+1) % MAXP;
+    q.life = 1;
+    q.p.copy(origin).add(new THREE.Vector3((Math.random()-.5)*spread, 0, (Math.random()-.5)*spread));
+    q.v.set((Math.random()-.5)*4, -25 - Math.random()*15, (Math.random()-.5)*4);
+  }
+}
+
+// ---------- State / controls ----------
+let state = 'idle', t = 0, vel = 0, legsOut = false, legT = 0, sepT = 0, separated = false;
+const s1Vel = new THREE.Vector3(), s1Spin = new THREE.Vector3();
+const stats = document.getElementById('stats');
+
+document.getElementById('launch').onclick = () => { if (state==='idle') { state='ignite'; t=0; } };
+document.getElementById('legs').onclick = () => { legsOut = !legsOut; document.getElementById('legs').textContent = legsOut ? 'Retract legs' : 'Deploy legs'; };
+document.getElementById('sep').onclick = () => { if (!separated) separate(); };
+document.getElementById('reset').onclick = reset;
+
+function separate(){
+  separated = true; sepT = 0;
+  // move stage1 into world space so it can fall independently
+  stage1.position.add(rocket.position); rocket.remove(stage1); scene.add(stage1);
+  s1Vel.set(.5, vel*0.9, .3); s1Spin.set(.15, 0, .25);
+}
+function reset(){
+  state='idle'; t=0; vel=0; separated=false;
+  if (stage1.parent !== rocket){ scene.remove(stage1); rocket.add(stage1); }
+  stage1.position.set(0,0,0); stage1.rotation.set(0,0,0);
+  rocket.position.set(0,1,0); rocket.rotation.set(0,0,0);
+  parts.forEach(q=>q.life=0);
+  controls.target.set(0,28,0); camera.position.set(55,32,80);
+}
+reset();
+
+// ---------- Loop ----------
+const clock = new THREE.Clock();
+const tmp = new THREE.Vector3();
+function animate(){
+  const dt = Math.min(clock.getDelta(), .05);
+  t += dt;
+
+  // Legs & fins animation
+  legT += ((legsOut?1:0) - legT) * Math.min(1, dt*3);
+  legs.forEach(l => l.rotation.z = -legT * 2.4);
+  fins.forEach(f => f.rotation.z = Math.PI/2 * (1 - legT));
+
+  // Flight
+  let thrusting = false;
+  if (state === 'ignite'){ thrusting = true; if (t > 2) state = 'flight'; }
+  if (state === 'flight'){
+    thrusting = true;
+    vel += dt * (6 + vel*0.08);
+    rocket.position.y += vel*dt;
+    rocket.rotation.z = -Math.min(.35, Math.max(0, rocket.position.y-60)/600); // gravity turn
+    rocket.position.x += Math.sin(-rocket.rotation.z) * vel * dt;
+    if (!separated && rocket.position.y > 260) separate();
+    if (rocket.position.y > 1600) reset();
+  }
+  if (separated && stage1.parent === scene){
+    s1Vel.y -= 9.8*dt;
+    stage1.position.addScaledVector(s1Vel, dt);
+    stage1.rotation.x += s1Spin.x*dt; stage1.rotation.z += s1Spin.z*dt;
+    if (stage1.position.y < -50) stage1.visible = false;
+  } else stage1.visible = true;
+
+  // Exhaust
+  if (thrusting){
+    const engineSrc = separated ? stage2 : stage1;
+    const yLocal = separated ? base2 - 2.8 : -1.4;
+    tmp.set(0, yLocal, 0); engineSrc.localToWorld(tmp);
+    emit(tmp, state==='ignite' ? 25 : 40, separated ? 1.2 : 3);
+    flameLight.position.copy(tmp); flameLight.intensity = 40 + Math.random()*20;
+  } else flameLight.intensity = 0;
+
+  for (let i=0;i<MAXP;i++){
+    const q = parts[i];
+    if (q.life > 0){
+      q.life -= dt*1.6;
+      q.p.addScaledVector(q.v, dt);
+      if (q.p.y < 1.2){ q.p.y = 1.2; q.v.y = 0; q.v.x *= 1.08; q.v.z *= 1.08; q.v.x += (Math.random()-.5)*20*dt*10; q.v.z += (Math.random()-.5)*20*dt*10; }
+      const L = Math.max(q.life,0);
+      pPos[i*3]=q.p.x; pPos[i*3+1]=q.p.y; pPos[i*3+2]=q.p.z;
+      // white-hot -> orange -> grey smoke
+      pCol[i*3]   = L>.6 ? 1 : L*1.4;
+      pCol[i*3+1] = L>.6 ? .85 : L*.8;
+      pCol[i*3+2] = L>.8 ? .6 : L*.3;
+    } else { pPos[i*3+1] = -9999; }
+  }
+  pGeo.attributes.position.needsUpdate = true;
+  pGeo.attributes.color.needsUpdate = true;
+
+  // Camera follows rocket in flight
+  if (state === 'flight'){
+    tmp.set(0, separated ? base2 : base2 - 14, 0); stage2.localToWorld(tmp);
+    const d = tmp.clone().sub(controls.target);
+    controls.target.add(d); camera.position.add(d);
+  }
+
+  stats.textContent = `ALT ${(rocket.position.y*10).toFixed(0)} m · VEL ${(vel*10*3.6).toFixed(0)} km/h · ${state.toUpperCase()}${separated?' · S2':''}`;
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
